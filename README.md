@@ -85,3 +85,29 @@ restart never touches GitHub.
 ## License
 
 Apache 2.0. See `LICENSE`.
+
+## Observed weakness in V1: what failed and why
+During this process, V1 found some cropped and resized images which altered the image dimension and in some 
+instances lost important visual content. This similarity of the histogram was still high in some instances,
+but the template matching may not have been sufficient to determine the orignal image. Although in my test,
+rotated cases did not seem to be the 'real' weak point, it is worth noting here that this did not seem to be
+the case. 
+
+## Design decision for V2: what Rule 4 is and why you chose it 
+To V2, I added rule 4, which is based on Canny edge detection and multiscale template matching. I decided to 
+take this route to compare the edges of the image, as well as to look at features within the image at different 
+scales which might be useful if an image is resized or otherwise transformed. The new rule is awarded 10 points and the 
+old rules are awarded 25 25 and 40 points all totaling 100 points. 
+
+## Effect of the change: accuracy before/after on easy vs hard 
+For the hard test set v1 had 49/60 correct answers and v2 had 42/60 correct answers.The overall results of v1(93 matches 
+of 135 images) versus v2 (83 matches of 135 images) are - These results indicate that increasing the number of mathces
+by adding rule 4 did not help v2 in my tests, as it did fewer matches than v1. without ground truth labels, it is 
+difficult to know if counts are accurate. 
+
+## Trade-offs: what new costs or risks did Rule 4 introduce 
+Edge detection and multiple scales of the template are addded to the system with rule 4. It might be helpful if 
+the edges are not drastically altered, but it may not work if important edges are removed from crop or altered.
+others images that matched in v1 were rejected in v2 due to the new added rule not gaining any points and lower
+weights of the existing rules. this emphasizes the need of selecting the weights appropriately and evalutating 
+the rule with various image transformations.
