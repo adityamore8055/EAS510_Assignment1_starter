@@ -1,0 +1,159 @@
+"""EAS 510 - Project 1: Rule functions for the Digital Forensics Apprentice.
+
+Each rule compares one suspect image against one registered original and
+returns a dict:
+
+    {
+        "rule": 1,
+        "name": "Metadata",
+        "fired": bool,          # True if the rule found supporting evidence
+        "score": int,           # points awarded out of "out_of"
+        "out_of": int,
+        "note": "Size ratio 0.85",   # short human-readable metric
+        "metric": 0.85,              # raw similarity measure in [0, 1]
+    }
+
+The points budgets are fixed by the assignment: Rule 1 = 30, Rule 2 = 30,
+Rule 3 = 40. The detector sums them into a 0-100 confidence score.
+
+These starter implementations are deliberately WEAK baselines (they hinge on
+simple thresholds). Improving them is the assignment.
+
+Reads are cached per path so one suspect against many originals does not
+re-decode images needlessly.
+"""
+
+import os
+from functools import lru_cache
+
+import numpy as np
+import cv2
+from PIL import Image
+
+#: Rule names used by SimpleDetector.evaluate() (V1).
+RULES = ("rule1_metadata", "rule2_histogram", "rule3_template")
+
+
+@lru_cache(maxsize=256)
+def _arr(path):
+    return cv2.imread(path)
+
+
+@lru_cache(maxsize=256)
+def _hist(path):
+    img = _arr(path)
+    if img is None:
+        return None
+    hists = [cv2.calcHist([img], [i], None, [32], [0, 256]) for i in range(3)]
+    hist_all = np.concatenate(hists).ravel().astype(np.float32)
+    cv2.normalize(hist_all, hist_all)
+    return hist_all
+
+
+def _downscale(img, max_dim=512):
+    """Fit an image into `max_dim` before expensive cv2 work."""
+    h, w = img.shape[:2]
+    if max(h, w) > max_dim:
+        scale = max_dim / max(h, w)
+        img = cv2.resize(img, (int(w * scale), int(h * scale)))
+    return img
+
+
+@lru_cache(maxsize=256)
+def _gray(path):
+    img = _arr(path)
+    if img is None:
+        return None
+    return _downscale(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+
+
+@lru_cache(maxsize=256)
+def _size(path):
+    try:
+        with Image.open(path) as img:
+            return img.size
+    except Exception:
+        return None
+
+
+def rule1_metadata(target, input_path):
+    """File size + dimensions. Compression and crops leave size fingerprints."""
+    out = {"rule": 1, "name": "Metadata", "fired": False, "score": 0,
+           "out_of": 30, "note": "Size ratio 0.00", "metric": 0.0}
+    try:
+        src_size = os.path.getsize(target["path"])
+        in_size = os.path.getsize(input_path)
+        src_w, src_h = _size(target["path"]) or (0, 0)
+        in_w, in_h = _size(input_path) or (0, 0)
+        size_ratio = min(src_size, in_size) / max(src_size, in_size)
+        area_kept = (in_w * in_h) / max(1, src_w * src_h)
+        metric = 0.5 * size_ratio + 0.5 * min(1.0, area_kept)
+        out["metric"] = round(max(0.0, min(1.0, metric)), 3)
+        out["note"] = f"Size ratio {out['metric']:.2f}"
+        if out["metric"] >= 0.6:
+            out["fired"] = True
+            out["score"] = int(round(out["out_of"] * out["metric"]))
+    except Exception:
+        pass
+    return out
+
+
+def rule2_histogram(target, input_path):
+    """Color histogram correlation. Robust to crops and spatial changes."""
+    out = {"rule": 2, "name": "Histogram", "fired": False, "score": 0,
+           "out_of": 30, "note": "Correlation 0.00", "metric": 0.0}
+    try:
+        hs, hi = _hist(target["path"]), _hist(input_path)
+        if hs is None or hi is None:
+            return out
+        corr = float(cv2.compareHist(hs, hi, cv2.HISTCMP_CORREL))
+        out["metric"] = round(max(0.0, min(1.0, corr)), 3)
+        out["note"] = f"Correlation {out['metric']:.2f}"
+        if out["metric"] >= 0.5:
+            out["fired"] = True
+            out["score"] = int(round(out["out_of"] * out["metric"]))
+    except Exception:
+        pass
+    return out
+
+
+def rule3_template(target, input_path):
+    """Multi-scale template matching: search for a suspect within an original."""
+    out = {"rule": 3, "name": "Template", "fired": False, "score": 0,
+           "out_of": 40, "note": "Match score 0.00", "metric": 0.0}
+    try:
+        src_g = _gray(target["path"])
+        nd_g = _gray(input_path)
+        if src_g is None or nd_g is None:
+            return out
+
+        sh, sw = src_g.shape
+        nh, nw = nd_g.shape
+        best = 0.0
+
+        for scale in (1.0, 0.85, 0.7, 0.55, 0.4, 0.3):
+            tw, th = int(nw * scale), int(nh * scale)
+            if tw < 20 or th < 20 or tw > sw or th > sh:
+                continue
+
+            template = cv2.resize(nd_g, (tw, th))
+            result = cv2.matchTemplate(
+                src_g, template, cv2.TM_CCOEFF_NORMED
+            )
+            best = max(best, float(result.max()))
+
+        metric = max(0.0, min(1.0, best))
+        out["metric"] = round(metric, 3)
+        out["note"] = f"Match score {metric:.2f}"
+
+        if metric >= 0.4:
+            hist_evidence = rule2_histogram(target, input_path)
+            if hist_evidence["metric"] < 0.5:
+                return out
+            out["fired"] = True
+            out["score"] = int(round(out["out_of"] * metric))
+
+    except Exception:
+        pass
+
+    return out

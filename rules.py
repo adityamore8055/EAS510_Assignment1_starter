@@ -118,12 +118,7 @@ def rule2_histogram(target, input_path):
 
 
 def rule3_template(target, input_path):
-    """Template matching. Detects when the suspect is contained in the original.
-
-    cv2.matchTemplate needs the template (suspect) smaller than the target
-    (original); on rotated/resized suspects this rule degrades fast. Fixing
-    that becomes Rule 4 territory.
-    """
+    """Multi-scale template matching: search for a suspect within an original."""
     out = {"rule": 3, "name": "Template", "fired": False, "score": 0,
            "out_of": 40, "note": "Match score 0.00", "metric": 0.0}
     try:
@@ -131,16 +126,39 @@ def rule3_template(target, input_path):
         nd_g = _gray(input_path)
         if src_g is None or nd_g is None:
             return out
-        if (src_g.shape[0] < nd_g.shape[0]) or (src_g.shape[1] < nd_g.shape[1]):
-            nd_g = cv2.resize(nd_g, (min(nd_g.shape[1], src_g.shape[1]),
-                                     min(nd_g.shape[0], src_g.shape[0])))
-        res = cv2.matchTemplate(src_g, nd_g, cv2.TM_CCOEFF_NORMED)
-        metric = float(res.max())
-        out["metric"] = round(max(0.0, min(1.0, metric)), 3)
-        out["note"] = f"Match score {out['metric']:.2f}"
-        if out["metric"] >= 0.4:
+
+        # Test contrast-normalized matching alongside the original images.
+        src_eq = cv2.equalizeHist(src_g)
+        nd_eq = cv2.equalizeHist(nd_g)
+
+        sh, sw = src_g.shape
+        nh, nw = nd_g.shape
+        best = 0.0
+
+        for scale in (1.0, 0.85, 0.7, 0.55, 0.4, 0.3):
+            tw, th = int(nw * scale), int(nh * scale)
+            if tw < 20 or th < 20 or tw > sw or th > sh:
+                continue
+
+            for source, suspect in ((src_g, nd_g), (src_eq, nd_eq)):
+                template = cv2.resize(suspect, (tw, th))
+                result = cv2.matchTemplate(
+                    source, template, cv2.TM_CCOEFF_NORMED
+                )
+                best = max(best, float(result.max()))
+
+        metric = max(0.0, min(1.0, best))
+        out["metric"] = round(metric, 3)
+        out["note"] = f"Match score {metric:.2f}"
+
+        if metric >= 0.4:
+            hist_evidence = rule2_histogram(target, input_path)
+            if hist_evidence["metric"] < 0.5:
+                return out
             out["fired"] = True
-            out["score"] = int(round(out["out_of"] * out["metric"]))
+            out["score"] = int(round(out["out_of"] * metric))
+
     except Exception:
         pass
+
     return out
